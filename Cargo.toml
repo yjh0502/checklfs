@@ -1,0 +1,13 @@
+[package]
+authors = ["Jihyun Yu <yjh0502@gmail.com>"]
+edition = "2018"
+name = "checklfs"
+version = "0.1.0"
+
+[dependencies]
+anyhow = "*"
+git2 = "*"
+stopwatch = "*"
+log = "*"
+env_logger = "*"
+argh = "*"
