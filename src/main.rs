@@ -2,9 +2,15 @@ use anyhow::Result;
 use argh::*;
 use git2::*;
 use log::*;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-fn iter_tree(repo: &Repository, prefix: &Path, tree: Tree) -> Result<usize> {
+fn iter_tree_case(
+    repo: &Repository,
+    prefix: &Path,
+    tree: &Tree,
+    names: &mut HashSet<String>,
+) -> Result<usize> {
     let mut count = 0;
 
     for entry in tree.iter() {
@@ -18,7 +24,43 @@ fn iter_tree(repo: &Repository, prefix: &Path, tree: Tree) -> Result<usize> {
             Some(ObjectType::Tree) => {
                 let tree = obj.peel_to_tree()?;
                 let prefix = prefix.join(&name);
-                count += iter_tree(repo, &prefix, tree)?;
+                count += iter_tree_case(repo, &prefix, &tree, names)?;
+            }
+            Some(ObjectType::Blob) => {
+                let name = prefix.join(&name);
+
+                let path_str = name.to_str().expect("non-utf8 filename");
+                let lower_path_str = path_str.to_lowercase();
+
+                if !names.insert(lower_path_str) {
+                    error!("case-insensitive duplicated entry: {}", path_str);
+                    count += 1;
+                }
+            }
+            _ => {
+                continue;
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+fn iter_tree_lfs(repo: &Repository, prefix: &Path, tree: &Tree) -> Result<usize> {
+    let mut count = 0;
+
+    for entry in tree.iter() {
+        let name = match entry.name() {
+            None => continue,
+            Some(name) => name,
+        };
+        let obj = entry.to_object(repo)?;
+
+        match obj.kind() {
+            Some(ObjectType::Tree) => {
+                let tree = obj.peel_to_tree()?;
+                let prefix = prefix.join(&name);
+                count += iter_tree_lfs(repo, &prefix, &tree)?;
             }
             Some(ObjectType::Blob) => {
                 let blob = obj.peel_to_blob()?;
@@ -57,9 +99,7 @@ struct CommandRoot {
 }
 
 fn main() -> Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("checklfs=info"),
-    )
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let arg: CommandRoot = argh::from_env();
 
@@ -82,12 +122,23 @@ fn main() -> Result<()> {
     };
 
     let tree = repo.find_tree(commit.tree_id())?;
-
     let root = PathBuf::new();
-    let error_count = iter_tree(&repo, &root.as_path(), tree)?;
 
-    info!("elapsed={}ms, errors={}", sw.elapsed_ms(), error_count);
+    info!("checking case-insensitive-duplicated files");
+    let mut name_set = HashSet::new();
+    let case_error_count = iter_tree_case(&repo, &root.as_path(), &tree, &mut name_set)?;
 
+    info!("checking invalid lfs files");
+    let lfs_error_count = iter_tree_lfs(&repo, &root.as_path(), &tree)?;
+
+    info!(
+        "elapsed={}ms, lfs-errors={}, case-errors={}",
+        sw.elapsed_ms(),
+        lfs_error_count,
+        case_error_count
+    );
+
+    let error_count = lfs_error_count + case_error_count;
     if error_count > 0 {
         std::process::exit(1);
     }
