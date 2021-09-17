@@ -281,7 +281,7 @@ fn main() -> Result<()> {
         case_error_count
     );
 
-    let error_count = lfs_error_count + case_error_count;
+    let error_count = meta_error_count + case_error_count + lfs_error_count;
     if error_count > 0 {
         std::process::exit(1);
     }
