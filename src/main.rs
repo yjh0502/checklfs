@@ -4,6 +4,7 @@ use git2::*;
 use log::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Default)]
 struct MetaStatus {
@@ -67,7 +68,7 @@ fn iter_tree_meta(
         };
 
         // Unity3d ignores following files
-        if name.starts_with(".") || name.ends_with("unitypackage") || name.ends_with("~") {
+        if name.starts_with(".") || name.ends_with("~") {
             continue;
         }
 
@@ -238,7 +239,7 @@ fn main() -> Result<()> {
 
     info!("repository={}", arg.path);
 
-    let sw = stopwatch::Stopwatch::start_new();
+    let start = Instant::now();
     let repo = git2::Repository::open(&arg.path)?;
 
     let commit = match arg.commit {
@@ -274,8 +275,8 @@ fn main() -> Result<()> {
     let lfs_error_count = t_lfs.join().unwrap()?;
 
     info!(
-        "elapsed={}ms, meta-errors={}, lfs-errors={}, case-errors={}",
-        sw.elapsed_ms(),
+        "elapsed={:?}, meta-errors={}, lfs-errors={}, case-errors={}",
+        start.elapsed(),
         meta_error_count,
         lfs_error_count,
         case_error_count
