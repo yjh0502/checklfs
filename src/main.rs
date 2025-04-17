@@ -27,19 +27,66 @@ impl MetaStatus {
     }
 }
 
+fn test_meta_ignore(name: &str) -> bool {
+    // Unity3d ignores following files
+    name.starts_with(".") || name.ends_with("~")
+}
+
 fn test_meta<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
     info!("checking meta files");
 
     let repo = git2::Repository::open(repo_root)?;
     let commit_id = git2::Oid::from_str(commit_id)?;
     let tree = repo.find_tree(commit_id)?;
-    let root = PathBuf::new();
 
     let mut count = 0;
-    let mut name_set = HashMap::new();
-    iter_tree_meta(&repo, &root.as_path(), &tree, &mut name_set)?;
+    let mut names = HashMap::<PathBuf, MetaStatus>::new();
 
-    for (path, status) in name_set {
+    tree.walk(TreeWalkMode::PreOrder, |base_path, entry| {
+        let name = match entry.name() {
+            None => return TreeWalkResult::Ok,
+            Some(name) => name,
+        };
+        let full_path = Path::new(base_path).join(name);
+        let path_str = full_path.to_str().unwrap();
+
+        if test_meta_ignore(name) {
+            return TreeWalkResult::Skip;
+        }
+
+        let (base_path, is_meta) = if name == "" {
+            let path_str = &path_str[0..path_str.len() - 1];
+            (Path::new(path_str).to_owned(), false)
+        } else if let Some(ext) = full_path.extension() {
+            if ext == "meta" {
+                let mut full_path = full_path.to_owned();
+                full_path.set_extension("");
+                (full_path, true)
+            } else {
+                (full_path.to_owned(), false)
+            }
+        } else {
+            (full_path.to_owned(), false)
+        };
+
+        if let Some(v) = names.get_mut(&base_path) {
+            if is_meta {
+                v.meta = true;
+            } else {
+                v.file = true;
+            }
+        } else {
+            if is_meta {
+                names.insert(base_path, MetaStatus::meta());
+            } else {
+                names.insert(base_path, MetaStatus::file());
+            }
+        }
+
+        TreeWalkResult::Ok
+    })?;
+
+    for (path, status) in names {
         if !path.starts_with("Assets/") || (path == Path::new("Assets")) {
             continue;
         }
@@ -52,75 +99,9 @@ fn test_meta<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
             );
         }
     }
+
+    info!("checking meta files: done");
     Ok(count)
-}
-
-fn iter_tree_meta(
-    repo: &Repository,
-    prefix: &Path,
-    tree: &Tree,
-    names: &mut HashMap<PathBuf, MetaStatus>,
-) -> Result<()> {
-    for entry in tree.iter() {
-        let name = match entry.name() {
-            None => continue,
-            Some(name) => name,
-        };
-
-        // Unity3d ignores following files
-        if name.starts_with(".") || name.ends_with("~") {
-            continue;
-        }
-
-        let obj = entry.to_object(repo)?;
-        let name = prefix.join(&name);
-
-        match obj.kind() {
-            Some(ObjectType::Tree) => {
-                let tree = obj.peel_to_tree()?;
-
-                iter_tree_meta(repo, &name, &tree, names)?;
-
-                if let Some(v) = names.get_mut(&name) {
-                    v.file = true;
-                } else {
-                    names.insert(name, MetaStatus::file());
-                }
-            }
-            Some(ObjectType::Blob) => {
-                let (base_path, is_meta) = if let Some(ext) = name.extension() {
-                    if ext == "meta" {
-                        let mut name = name.to_owned();
-                        name.set_extension("");
-                        (name, true)
-                    } else {
-                        (name.to_owned(), false)
-                    }
-                } else {
-                    (name.to_owned(), false)
-                };
-
-                if let Some(v) = names.get_mut(&base_path) {
-                    if is_meta {
-                        v.meta = true;
-                    } else {
-                        v.file = true;
-                    }
-                } else {
-                    if is_meta {
-                        names.insert(base_path, MetaStatus::meta());
-                    } else {
-                        names.insert(base_path, MetaStatus::file());
-                    }
-                }
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn test_case<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
@@ -129,43 +110,61 @@ fn test_case<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
     let repo = git2::Repository::open(repo_root)?;
     let commit_id = git2::Oid::from_str(commit_id)?;
     let tree = repo.find_tree(commit_id)?;
-    let root = PathBuf::new();
 
-    let mut name_set = HashSet::new();
-    iter_tree_case(&repo, &root.as_path(), &tree, &mut name_set)
-}
-
-fn iter_tree_case(
-    repo: &Repository,
-    prefix: &Path,
-    tree: &Tree,
-    names: &mut HashSet<String>,
-) -> Result<usize> {
+    let mut names = HashSet::new();
     let mut count = 0;
 
-    for entry in tree.iter() {
+    tree.walk(TreeWalkMode::PreOrder, |base_path, entry| {
         let name = match entry.name() {
-            None => continue,
+            None => return TreeWalkResult::Ok,
             Some(name) => name,
         };
-        let obj = entry.to_object(repo)?;
-        let name = prefix.join(&name);
+        let full_path = Path::new(base_path).join(name);
+        let path_str = full_path.to_str().unwrap();
 
-        let path_str = name.to_str().expect("non-utf8 filename");
         let lower_path_str = path_str.to_lowercase();
-
         if !names.insert(lower_path_str) {
             error!("case-insensitive duplicated entry: {}", path_str);
             count += 1;
         }
 
-        if let Some(ObjectType::Tree) = obj.kind() {
-            let tree = obj.peel_to_tree()?;
-            count += iter_tree_case(repo, &name, &tree, names)?;
-        }
+        TreeWalkResult::Ok
+    })?;
+
+    info!("checking case-insensitive-duplicated files: done");
+    Ok(count)
+}
+
+fn test_lfs_walk<'a>(
+    repo: &'a Repository,
+    base_path: &'a str,
+    entry: &'a TreeEntry<'a>,
+) -> Result<usize> {
+    let name = match entry.name() {
+        Some(name) => name,
+        None => return Ok(0),
+    };
+
+    let full_path = Path::new(base_path).join(name);
+    let attr = repo.get_attr(&full_path, "merge", git2::AttrCheckFlags::INDEX_ONLY)?;
+    if attr != Some("lfs") {
+        return Ok(0);
     }
 
-    Ok(count)
+    let obj = entry.to_object(repo)?;
+    if let Some(ObjectType::Blob) = obj.kind() {
+        let blob = obj.peel_to_blob()?;
+        let size = blob.size();
+
+        // TODO: check content
+        if size < 150 {
+            return Ok(0);
+        }
+        error!("should be in LFS: {:?}, {}", full_path, size);
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }
 
 fn test_lfs<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
@@ -174,51 +173,16 @@ fn test_lfs<P: AsRef<Path>>(repo_root: P, commit_id: &str) -> Result<usize> {
     let repo = git2::Repository::open(repo_root)?;
     let commit_id = git2::Oid::from_str(commit_id)?;
     let tree = repo.find_tree(commit_id)?;
-    let root = PathBuf::new();
-
-    iter_tree_lfs(&repo, &root, &tree)
-}
-
-fn iter_tree_lfs(repo: &Repository, prefix: &Path, tree: &Tree) -> Result<usize> {
     let mut count = 0;
 
-    for entry in tree.iter() {
-        let name = match entry.name() {
-            None => continue,
-            Some(name) => name,
-        };
-
-        let obj = entry.to_object(repo)?;
-
-        match obj.kind() {
-            Some(ObjectType::Tree) => {
-                let tree = obj.peel_to_tree()?;
-                let prefix = prefix.join(&name);
-                count += iter_tree_lfs(repo, &prefix, &tree)?;
-            }
-            Some(ObjectType::Blob) => {
-                let blob = obj.peel_to_blob()?;
-                let size = blob.size();
-
-                let full_path = Path::join(prefix, name);
-
-                let attr = repo.get_attr(&full_path, "merge", git2::AttrCheckFlags::INDEX_ONLY)?;
-                if attr != Some("lfs") {
-                    continue;
-                }
-
-                // TODO: check content
-                if size < 150 {
-                    continue;
-                }
-                error!("should be in LFS: {:?}, {}", full_path, size);
-                count += 1;
-            }
-            _ => {
-                continue;
-            }
+    tree.walk(TreeWalkMode::PreOrder, |base_path, entry| {
+        if let Ok(num) = test_lfs_walk(&repo, base_path, entry) {
+            count += num;
         }
-    }
+        TreeWalkResult::Ok
+    })?;
+
+    info!("checking invalid lfs files: done");
     Ok(count)
 }
 
@@ -234,6 +198,7 @@ struct CommandRoot {
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    git2::opts::enable_caching(true);
 
     let arg: CommandRoot = argh::from_env();
 
